@@ -1,0 +1,92 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function email() { return signedIn() ? request.auth.token.email : ''; }
+    function authorized() {
+      return signedIn() && email() in [
+        'admin1@gmail.com',
+        'admin2@gmail.com',
+        'admin3@gmail.com'
+      ];
+    }
+    function admin() {
+      return authorized() && email() == 'admin1@gmail.com';
+    }
+
+    match /settings/receiptCounter {
+      allow read: if authorized();
+      allow create: if admin()
+        && request.resource.data.keys().hasOnly(['nextNumber','createdAt','createdBy'])
+        && request.resource.data.nextNumber == 1
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if authorized()
+        && request.resource.data.keys().hasOnly(['nextNumber','createdAt','createdBy'])
+        && request.resource.data.nextNumber == resource.data.nextNumber + 1
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy;
+      allow delete: if false;
+    }
+
+    match /members/{memberId} {
+      allow read: if authorized();
+
+      allow create: if authorized()
+        && request.resource.data.keys().hasOnly([
+          'name','mobile','expectedAmount','paidAmount','status',
+          'createdAt','createdBy','lastPaymentId','updatedAt','updatedBy'
+        ])
+        && request.resource.data.name is string
+        && request.resource.data.mobile is string
+        && request.resource.data.mobile.matches('^[0-9]{10}$')
+        && request.resource.data.expectedAmount is number
+        && request.resource.data.expectedAmount >= 0
+        && request.resource.data.paidAmount is number
+        && request.resource.data.paidAmount >= 0
+        && request.resource.data.status in ['unpaid','partial','paid']
+        && request.resource.data.createdBy == request.auth.uid;
+
+      // Admin can correct member data; collectors may not edit member master data.
+      allow update: if admin() || (
+        authorized()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'paidAmount','status','lastPaymentId','updatedAt','updatedBy'
+        ])
+        && request.resource.data.expectedAmount == resource.data.expectedAmount
+        && request.resource.data.name == resource.data.name
+        && request.resource.data.mobile == resource.data.mobile
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.createdBy == resource.data.createdBy
+      );
+
+      allow delete: if admin();
+    }
+
+    match /payments/{paymentId} {
+      allow read: if authorized();
+      allow create: if authorized()
+        && request.resource.data.keys().hasOnly([
+          'memberId','name','mobile','amount','mode','collector','note',
+          'receipt','createdAt','createdBy','createdByEmail','status','schemaVersion'
+        ])
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.createdByEmail == request.auth.token.email
+        && request.resource.data.status == 'paid'
+        && request.resource.data.amount is number
+        && request.resource.data.amount > 0
+        && request.resource.data.mobile is string
+        && request.resource.data.mobile.matches('^[0-9]{10}$')
+        && request.resource.data.mode in ['Cash','UPI']
+        && request.resource.data.receipt.matches('^AMM-[0-9]{5}$')
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.schemaVersion == 3;
+
+      allow delete: if admin();
+      allow update: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
